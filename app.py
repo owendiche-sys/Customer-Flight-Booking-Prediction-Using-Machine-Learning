@@ -1128,46 +1128,57 @@ with tab2:
             st.info("No expected numeric booking features were found.")
 
     with c2:
-        render_section_title("Add-on association view")
-        addon_rows = []
-        for col in COMMON_BINARY_COLS:
+                render_section_title("Add-on association view")
+    addon_rows = []
+
+    for col in COMMON_BINARY_COLS:
             if col in dff.columns:
                 temp = pd.DataFrame(
                     {
-                        col: pd.to_numeric(dff[col], errors="coerce"),
+                        "flag": pd.to_numeric(dff[col], errors="coerce"),
                         target_col: pd.to_numeric(dff[target_col], errors="coerce"),
                     }
                 ).dropna()
+
                 if temp.empty:
                     continue
-                grp = temp.groupby(col)[target_col].agg(
-                    n="size",
-                    completion_rate=lambda x: float((x > 0).mean()),
-                ).reset_index()
+
+                grp = (
+                    temp.groupby("flag")[target_col]
+                    .agg(
+                        n="size",
+                        completion_rate=lambda x: float((x > 0).mean()),
+                    )
+                    .reset_index()
+                )
                 grp["feature"] = col
                 addon_rows.append(grp)
 
-        if addon_rows:
+    if addon_rows:
             addon_df = pd.concat(addon_rows, ignore_index=True)
+            addon_df["flag"] = addon_df["flag"].round().astype("Int64")
             addon_df["completion_rate_pct"] = addon_df["completion_rate"] * 100
-            addon_df["label"] = addon_df["feature"] + " = " + addon_df.iloc[:, 0].astype(int).astype(str)
+            addon_df["label"] = addon_df["feature"] + " = " + addon_df["flag"].astype(str)
 
             fig = px.bar(
                 addon_df,
                 x="feature",
                 y="completion_rate_pct",
-                color=addon_df.iloc[:, 0].astype(str),
+                color=addon_df["flag"].astype(str),
                 barmode="group",
-                labels={"feature": "Add-on feature", "completion_rate_pct": "Completion rate (%)", "color": "Flag"},
+                labels={
+                    "feature": "Add-on feature",
+                    "completion_rate_pct": "Completion rate (%)",
+                    "color": "Flag",
+                },
             )
             fig.update_layout(height=380, margin=dict(l=10, r=10, t=20, b=10))
             st.plotly_chart(fig, use_container_width=True)
 
-            display_addons = addon_df[[addon_df.columns[0], "feature", "n", "completion_rate_pct"]].copy()
-            display_addons.columns = ["flag", "feature", "n", "completion_rate_pct"]
+            display_addons = addon_df[["flag", "feature", "n", "completion_rate_pct"]].copy()
             display_addons["completion_rate_pct"] = display_addons["completion_rate_pct"].round(2)
             st.dataframe(display_addons, use_container_width=True, hide_index=True)
-        else:
+    else:
             st.info("No usable add-on indicator columns were found.")
 
     st.write("")
