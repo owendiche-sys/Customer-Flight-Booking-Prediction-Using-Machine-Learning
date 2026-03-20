@@ -1,99 +1,353 @@
-import streamlit as st
-import pandas as pd
-import numpy as np
-from pathlib import Path
+from __future__ import annotations
 
+import io
+from html import escape
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
+import numpy as np
+import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+import streamlit as st
 
-from sklearn.model_selection import train_test_split
-from sklearn.compose import ColumnTransformer, make_column_selector as selector
-from sklearn.preprocessing import OneHotEncoder
-from sklearn.pipeline import Pipeline
-from sklearn.impute import SimpleImputer
+from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.impute import SimpleImputer
 from sklearn.metrics import (
+    accuracy_score,
+    average_precision_score,
     classification_report,
     confusion_matrix,
+    f1_score,
+    precision_recall_curve,
+    precision_score,
+    recall_score,
     roc_auc_score,
     roc_curve,
-    precision_recall_curve,
-    average_precision_score,
-    accuracy_score,
+)
+from sklearn.model_selection import train_test_split
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OneHotEncoder
+
+
+# =========================================================
+# Page config
+# =========================================================
+st.set_page_config(
+    page_title="Customer Booking Conversion Intelligence Dashboard",
+    layout="wide",
+    initial_sidebar_state="expanded",
 )
 
-# =========================
-# Page config (light theme)
-# =========================
-st.set_page_config(page_title="Customer Booking Prediction Dashboard", layout="wide")
-
-BG = "#F6F8FC"
-CARD = "#FFFFFF"
-TEXT = "#111827"
-MUTED = "rgba(17,24,39,0.65)"
-BORDER = "rgba(15,23,42,0.08)"
-
-st.markdown(
-    f"""
-<style>
-html, body, [data-testid="stAppViewContainer"] {{
-    background: {BG};
-}}
-.block-container {{
-    padding-top: 2.6rem;  /* avoids title clipping */
-    padding-bottom: 1.5rem;
-}}
-#MainMenu {{visibility:hidden;}}
-footer {{visibility:hidden;}}
-
-section[data-testid="stSidebar"] > div {{
-    border-right: 1px solid {BORDER};
-}}
-
-.card {{
-    background: {CARD};
-    border: 1px solid {BORDER};
-    border-radius: 18px;
-    padding: 16px 16px;
-    box-shadow: 0 10px 30px rgba(0,0,0,0.08);
-}}
-.small {{
-    color: {MUTED};
-    font-size: 12px;
-}}
-</style>
-""",
-    unsafe_allow_html=True,
-)
-
-
-def kpi_card(title, value, subtitle=""):
-    st.markdown(
-        f"""
-<div class="card">
-  <div style="color:{MUTED}; font-weight:600; font-size:14px;">{title}</div>
-  <div style="color:{TEXT}; font-weight:800; font-size:28px; margin-top:6px;">{value}</div>
-  <div style="color:{MUTED}; font-size:12px; margin-top:6px;">{subtitle}</div>
-</div>
-""",
-        unsafe_allow_html=True,
-    )
-
-
-# =========================
-# Data loading (single-folder project)
-# =========================
 APP_DIR = Path(__file__).resolve().parent
-
 CANDIDATES = [
     APP_DIR / "customer_booking.csv",
     APP_DIR / "data.csv",
     APP_DIR / "customer_booking_prediction.csv",
 ]
 
+BG = "#F6F8FC"
+CARD = "#FFFFFF"
+TEXT = "#111827"
+MUTED = "rgba(17,24,39,0.68)"
+BORDER = "rgba(15,23,42,0.10)"
 
+DAY_ORDER = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+COMMON_BINARY_COLS = [
+    "wants_extra_baggage",
+    "wants_preferred_seat",
+    "wants_in_flight_meals",
+]
+COMMON_NUMERIC_PRIORITY = [
+    "purchase_lead",
+    "length_of_stay",
+    "flight_duration",
+    "flight_hour",
+    "num_passengers",
+]
+COMMON_CATEGORY_PRIORITY = [
+    "sales_channel",
+    "trip_type",
+    "flight_day",
+    "booking_origin",
+    "route",
+]
+
+
+# =========================================================
+# Styling
+# =========================================================
+def inject_css() -> None:
+    st.markdown(
+        f"""
+        <style>
+          :root {{
+            --bg: {BG};
+            --panel: {CARD};
+            --text: {TEXT};
+            --muted: {MUTED};
+            --border: {BORDER};
+            --shadow: 0 10px 30px rgba(15,23,42,0.06);
+            --radius: 18px;
+            --accent: #1d4ed8;
+            --accent-soft: rgba(29,78,216,0.08);
+          }}
+
+          html, body, [data-testid="stAppViewContainer"] {{
+            background: var(--bg) !important;
+            color: var(--text) !important;
+          }}
+
+          [data-testid="stHeader"] {{
+            background: rgba(246,248,252,0.82);
+          }}
+
+          .block-container {{
+            padding-top: 1.15rem;
+            padding-bottom: 2.25rem;
+            max-width: 1400px;
+          }}
+
+          #MainMenu {{ visibility: hidden; }}
+          footer {{ visibility: hidden; }}
+
+          section[data-testid="stSidebar"] > div {{
+            background: #ffffff !important;
+            border-right: 1px solid var(--border);
+          }}
+
+          .hero {{
+            background: linear-gradient(135deg, #ffffff 0%, #f9fbff 100%);
+            border: 1px solid var(--border);
+            border-radius: 24px;
+            padding: 24px 24px 18px 24px;
+            box-shadow: var(--shadow);
+            margin-bottom: 18px;
+          }}
+
+          .hero-title {{
+            font-size: 30px;
+            font-weight: 800;
+            letter-spacing: -0.02em;
+            margin: 0 0 8px 0;
+            color: var(--text);
+          }}
+
+          .hero-sub {{
+            margin: 0;
+            font-size: 15px;
+            line-height: 1.6;
+            color: var(--muted);
+            max-width: 980px;
+          }}
+
+          .hero-strip {{
+            margin-top: 14px;
+            padding: 10px 12px;
+            border-radius: 14px;
+            background: var(--accent-soft);
+            border: 1px solid rgba(29,78,216,0.12);
+            color: #1e3a8a;
+            font-size: 13px;
+          }}
+
+          .section-title {{
+            font-size: 18px;
+            font-weight: 800;
+            color: var(--text);
+            margin: 0 0 10px 0;
+          }}
+
+          .card {{
+            background: var(--panel);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            box-shadow: var(--shadow);
+            padding: 16px;
+          }}
+
+          .card-title {{
+            margin: 0 0 6px 0;
+            font-size: 16px;
+            font-weight: 800;
+            color: var(--text);
+          }}
+
+          .card-sub {{
+            margin: 0 0 12px 0;
+            color: var(--muted);
+            font-size: 13px;
+            line-height: 1.5;
+          }}
+
+          .kpi-grid {{
+            display: grid;
+            grid-template-columns: repeat(6, minmax(0, 1fr));
+            gap: 12px;
+            margin-bottom: 10px;
+          }}
+
+          @media (max-width: 1280px) {{
+            .kpi-grid {{ grid-template-columns: repeat(3, minmax(0, 1fr)); }}
+          }}
+
+          @media (max-width: 700px) {{
+            .kpi-grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
+          }}
+
+          @media (max-width: 540px) {{
+            .kpi-grid {{ grid-template-columns: repeat(1, minmax(0, 1fr)); }}
+          }}
+
+          .kpi-card {{
+            background: var(--panel);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            box-shadow: var(--shadow);
+            padding: 14px;
+            min-height: 108px;
+          }}
+
+          .kpi-label {{
+            font-size: 12px;
+            color: var(--muted);
+            margin-bottom: 8px;
+          }}
+
+          .kpi-value {{
+            font-size: 24px;
+            font-weight: 800;
+            line-height: 1.1;
+            color: var(--text);
+            margin-bottom: 8px;
+          }}
+
+          .kpi-note {{
+            font-size: 12px;
+            color: var(--muted);
+            line-height: 1.45;
+          }}
+
+          .insight-list {{
+            margin: 0;
+            padding-left: 18px;
+          }}
+
+          .insight-list li {{
+            margin-bottom: 8px;
+            line-height: 1.55;
+            color: var(--text);
+          }}
+
+          .badge-row {{
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-top: 6px;
+          }}
+
+          .badge {{
+            display: inline-block;
+            padding: 6px 10px;
+            border-radius: 999px;
+            background: #f8fafc;
+            border: 1px solid var(--border);
+            color: var(--text);
+            font-size: 12px;
+          }}
+
+          .small-note {{
+            color: var(--muted);
+            font-size: 12px;
+          }}
+
+          .js-plotly-plot .plotly .modebar {{
+            opacity: 0.08;
+          }}
+
+          .js-plotly-plot .plotly:hover .modebar {{
+            opacity: 1;
+          }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+inject_css()
+
+
+# =========================================================
+# Formatting helpers
+# =========================================================
+def fmt_num(x: Optional[float], digits: int = 2) -> str:
+    if x is None or pd.isna(x) or not np.isfinite(x):
+        return "N/A"
+    return f"{x:,.{digits}f}"
+
+
+def fmt_pct(x: Optional[float], digits: int = 1) -> str:
+    if x is None or pd.isna(x) or not np.isfinite(x):
+        return "N/A"
+    return f"{x * 100:,.{digits}f}%"
+
+
+def safe_divide(a: float, b: float) -> float:
+    if b == 0 or pd.isna(b):
+        return np.nan
+    return a / b
+
+
+def esc(text: str) -> str:
+    return escape(str(text))
+
+
+# =========================================================
+# UI helpers
+# =========================================================
+def render_section_title(text: str) -> None:
+    st.markdown(f"<div class='section-title'>{esc(text)}</div>", unsafe_allow_html=True)
+
+
+def render_kpis(items: List[Tuple[str, str, str]]) -> None:
+    blocks: List[str] = []
+    for label, value, note in items:
+        blocks.append(
+            "<div class='kpi-card'>"
+            f"<div class='kpi-label'>{esc(label)}</div>"
+            f"<div class='kpi-value'>{esc(value)}</div>"
+            f"<div class='kpi-note'>{esc(note)}</div>"
+            "</div>"
+        )
+    st.markdown("<div class='kpi-grid'>" + "".join(blocks) + "</div>", unsafe_allow_html=True)
+
+
+def render_list_card(title: str, items: List[str], subtitle: str = "") -> None:
+    html = "<div class='card'>"
+    html += f"<div class='card-title'>{esc(title)}</div>"
+    if subtitle:
+        html += f"<div class='card-sub'>{esc(subtitle)}</div>"
+    html += "<ul class='insight-list'>"
+    for item in items:
+        html += f"<li>{esc(item)}</li>"
+    html += "</ul></div>"
+    st.markdown(html, unsafe_allow_html=True)
+
+
+def render_badges(items: List[str]) -> None:
+    html = "<div class='badge-row'>"
+    for item in items:
+        html += f"<span class='badge'>{esc(item)}</span>"
+    html += "</div>"
+    st.markdown(html, unsafe_allow_html=True)
+
+
+# =========================================================
+# Data loading
+# =========================================================
 @st.cache_data(show_spinner=False)
-def load_csv_with_fallback(path: Path) -> pd.DataFrame:
+def load_csv_with_fallback_from_path(path: str) -> pd.DataFrame:
     for enc in ("utf-8", "ISO-8859-1", "cp1252", "latin1"):
         try:
             return pd.read_csv(path, encoding=enc)
@@ -102,27 +356,29 @@ def load_csv_with_fallback(path: Path) -> pd.DataFrame:
     return pd.read_csv(path)
 
 
-def resolve_dataset_path() -> Path | None:
+@st.cache_data(show_spinner=False)
+def load_csv_with_fallback_from_bytes(file_bytes: bytes) -> pd.DataFrame:
+    for enc in ("utf-8", "ISO-8859-1", "cp1252", "latin1"):
+        try:
+            return pd.read_csv(io.BytesIO(file_bytes), encoding=enc)
+        except UnicodeDecodeError:
+            continue
+    return pd.read_csv(io.BytesIO(file_bytes))
+
+
+def resolve_dataset_path() -> Optional[Path]:
     for p in CANDIDATES:
         if p.exists():
             return p
     return None
 
 
-# =========================
-# Domain cleanup helpers
-# =========================
-DAY_ORDER = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-
-
-def _dedupe_columns(cols) -> list[str]:
-    """
-    Fixes the TypeError you saw when selecting num_passengers.
-    If a column name appears multiple times, df[col] returns a DataFrame (not a Series).
-    This makes names unique by appending __dup1, __dup2, ...
-    """
-    seen = {}
-    out = []
+# =========================================================
+# Data standardisation
+# =========================================================
+def dedupe_columns(cols) -> List[str]:
+    seen: Dict[str, int] = {}
+    out: List[str] = []
     for c in cols:
         c = str(c).strip()
         if c not in seen:
@@ -134,31 +390,38 @@ def _dedupe_columns(cols) -> list[str]:
     return out
 
 
+def maybe_numeric_cast(series: pd.Series) -> pd.Series:
+    if pd.api.types.is_numeric_dtype(series):
+        return series
+    temp = pd.to_numeric(series, errors="coerce")
+    valid_ratio = temp.notna().mean()
+    if valid_ratio >= 0.90:
+        return temp
+    return series
+
+
 def standardize_df(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
+    out = df.copy()
+    out.columns = dedupe_columns(out.columns)
 
-    # Clean column names + ensure uniqueness (prevents df["num_passengers"] becoming a DataFrame)
-    df.columns = _dedupe_columns(df.columns)
+    for col in out.columns:
+        if out[col].dtype == object:
+            out[col] = out[col].astype(str).str.strip()
 
-    # Tidy string columns
-    for col in df.columns:
-        if df[col].dtype == object:
-            df[col] = df[col].astype(str).str.strip()
+    for col in out.columns:
+        out[col] = maybe_numeric_cast(out[col])
 
-    # flight_day as ordered categorical (if present)
-    if "flight_day" in df.columns:
-        df["flight_day"] = pd.Categorical(df["flight_day"], categories=DAY_ORDER, ordered=True)
+    if "flight_day" in out.columns:
+        out["flight_day"] = pd.Categorical(out["flight_day"], categories=DAY_ORDER, ordered=True)
 
-    # Ensure target numeric if present
-    if "booking_complete" in df.columns:
-        df["booking_complete"] = pd.to_numeric(df["booking_complete"], errors="coerce")
+    if "booking_complete" in out.columns:
+        out["booking_complete"] = pd.to_numeric(out["booking_complete"], errors="coerce")
 
-    # Common binary flags: coerce where possible
-    for c in ["wants_extra_baggage", "wants_preferred_seat", "wants_in_flight_meals"]:
-        if c in df.columns:
-            df[c] = pd.to_numeric(df[c], errors="coerce")
+    for c in COMMON_BINARY_COLS:
+        if c in out.columns:
+            out[c] = pd.to_numeric(out[c], errors="coerce")
 
-    return df
+    return out
 
 
 def detect_target(df: pd.DataFrame) -> str:
@@ -170,126 +433,55 @@ def detect_target(df: pd.DataFrame) -> str:
     return df.columns[-1]
 
 
-# =========================
-# Modeling
-# =========================
-def build_pipeline(n_estimators: int, max_depth: int | None, random_state: int) -> Pipeline:
-    num_sel = selector(dtype_include=np.number)
-    cat_sel = selector(dtype_exclude=np.number)
-
-    num_pipe = Pipeline(steps=[("imputer", SimpleImputer(strategy="median"))])
-    cat_pipe = Pipeline(
-        steps=[
-            ("imputer", SimpleImputer(strategy="most_frequent")),
-            ("onehot", OneHotEncoder(handle_unknown="ignore")),
-        ]
-    )
-
-    pre = ColumnTransformer(
-        transformers=[
-            ("num", num_pipe, num_sel),
-            ("cat", cat_pipe, cat_sel),
-        ],
-        remainder="drop",
-        verbose_feature_names_out=False,
-    )
-
-    clf = RandomForestClassifier(
-        n_estimators=int(n_estimators),
-        random_state=int(random_state),
-        n_jobs=-1,
-        max_depth=max_depth,
-    )
-
-    return Pipeline(steps=[("prep", pre), ("model", clf)])
+def prepare_binary_target(series: pd.Series) -> pd.Series:
+    s = pd.to_numeric(series, errors="coerce")
+    s = s.dropna()
+    if s.empty:
+        return s
+    return (s > 0).astype(int)
 
 
-@st.cache_resource(show_spinner=False)
-def train_eval_cached(
+# =========================================================
+# Filtering
+# =========================================================
+def apply_filters(
     df: pd.DataFrame,
-    target_col: str,
-    test_size: float,
-    random_state: int,
-    n_estimators: int,
-    max_depth: int | None,
-):
-    df = df.copy().dropna(axis=0, how="all")
-
-    df[target_col] = pd.to_numeric(df[target_col], errors="coerce")
-    df = df.dropna(subset=[target_col])
-
-    X = df.drop(columns=[target_col], errors="ignore")
-    y = df[target_col].astype(int)
-
-    X_train, X_test, y_train, y_test = train_test_split(
-        X,
-        y,
-        test_size=float(test_size),
-        random_state=int(random_state),
-        stratify=y if y.nunique() == 2 else None,
-    )
-
-    pipe = build_pipeline(n_estimators=n_estimators, max_depth=max_depth, random_state=random_state)
-    pipe.fit(X_train, y_train)
-
-    pred = pipe.predict(X_test)
-    proba_test = pipe.predict_proba(X_test)[:, 1] if hasattr(pipe.named_steps["model"], "predict_proba") else None
-
-    acc = accuracy_score(y_test, pred)
-    roc_auc = roc_auc_score(y_test, proba_test) if proba_test is not None and y_test.nunique() == 2 else np.nan
-    report = classification_report(y_test, pred, output_dict=True, zero_division=0)
-    cm = confusion_matrix(y_test, pred)
-
-    roc = (None, None, None)
-    pr = (None, None, None)
-    ap = np.nan
-
-    if proba_test is not None and y_test.nunique() == 2:
-        fpr, tpr, thr = roc_curve(y_test, proba_test)
-        roc = (fpr, tpr, thr)
-
-        prec, rec, thr2 = precision_recall_curve(y_test, proba_test)
-        pr = (prec, rec, thr2)
-        ap = average_precision_score(y_test, proba_test)
-
-    fi = pd.DataFrame({"feature": [], "importance": []})
-    try:
-        feature_names = pipe.named_steps["prep"].get_feature_names_out()
-        importances = pipe.named_steps["model"].feature_importances_
-        fi = (
-            pd.DataFrame({"feature": feature_names, "importance": importances})
-            .sort_values("importance", ascending=False)
-            .reset_index(drop=True)
-        )
-    except Exception:
-        pass
-
-    # Probabilities for full dataset (used for probability bands)
-    proba_all = None
-    try:
-        if hasattr(pipe.named_steps["model"], "predict_proba"):
-            proba_all = pipe.predict_proba(X)[:, 1]
-    except Exception:
-        proba_all = None
-
-    return pipe, X, y, X_test, y_test, pred, proba_test, proba_all, acc, roc_auc, report, cm, fi, roc, pr, ap
+    sales_channels: List[str],
+    trip_types: List[str],
+    flight_days: List[str],
+) -> pd.DataFrame:
+    out = df.copy()
+    if sales_channels and "sales_channel" in out.columns:
+        out = out[out["sales_channel"].astype(str).isin(sales_channels)]
+    if trip_types and "trip_type" in out.columns:
+        out = out[out["trip_type"].astype(str).isin(trip_types)]
+    if flight_days and "flight_day" in out.columns:
+        out = out[out["flight_day"].astype(str).isin(flight_days)]
+    return out
 
 
-# =========================
-# Insights helpers
-# =========================
+# =========================================================
+# Insight helpers
+# =========================================================
 def completion_rate(series: pd.Series) -> float:
     s = pd.to_numeric(series, errors="coerce").dropna()
-    if len(s) == 0:
+    if s.empty:
         return np.nan
     return float((s > 0).mean())
 
 
 def rate_table_by_category(
-    df: pd.DataFrame, target: str, col: str, min_n: int, top_n: int = 10
-) -> tuple[pd.DataFrame, float]:
+    df: pd.DataFrame,
+    target: str,
+    col: str,
+    min_n: int,
+    top_n: int = 10,
+) -> Tuple[pd.DataFrame, float]:
+    if col not in df.columns or target not in df.columns:
+        return pd.DataFrame(), np.nan
+
     base = completion_rate(df[target])
-    g = (
+    grp = (
         df.groupby(col, dropna=False)[target]
         .agg(
             n="size",
@@ -297,43 +489,34 @@ def rate_table_by_category(
         )
         .reset_index()
     )
-    g["lift_vs_overall"] = g["completion_rate"] - base
-    g = g[g["n"] >= min_n].copy()
-    g[col] = g[col].astype(str)
-    g = g.sort_values(["lift_vs_overall", "n"], ascending=[False, False]).head(top_n)
-    return g, base
+    grp["lift_vs_overall"] = grp["completion_rate"] - base
+    grp = grp[grp["n"] >= min_n].copy()
+    grp[col] = grp[col].astype(str)
+    grp = grp.sort_values(["completion_rate", "n"], ascending=[False, False]).head(top_n)
+    return grp, base
 
 
 def numeric_bins_rate(df: pd.DataFrame, target: str, col: str, bins: int = 8) -> pd.DataFrame:
-    """
-    Robust to duplicate column names:
-    if df[col] returns a DataFrame, use the first column as the Series.
-    """
     if col not in df.columns or target not in df.columns:
         return pd.DataFrame()
 
-    x = df[col]
-    y = df[target]
+    temp = pd.DataFrame(
+        {
+            col: pd.to_numeric(df[col], errors="coerce"),
+            target: pd.to_numeric(df[target], errors="coerce"),
+        }
+    ).dropna()
 
-    if isinstance(x, pd.DataFrame):
-        x = x.iloc[:, 0]
-    if isinstance(y, pd.DataFrame):
-        y = y.iloc[:, 0]
-
-    d = pd.DataFrame({col: x, target: y}).copy()
-    d[col] = pd.to_numeric(d[col], errors="coerce")
-    d[target] = pd.to_numeric(d[target], errors="coerce")
-    d = d.dropna(subset=[col, target])
-    if len(d) == 0:
+    if temp.empty:
         return pd.DataFrame()
 
     try:
-        d["bin"] = pd.qcut(d[col], q=bins, duplicates="drop")
+        temp["bin"] = pd.qcut(temp[col], q=bins, duplicates="drop")
     except ValueError:
-        d["bin"] = pd.cut(d[col], bins=bins)
+        temp["bin"] = pd.cut(temp[col], bins=bins)
 
     out = (
-        d.groupby("bin", observed=True)
+        temp.groupby("bin", observed=True)
         .agg(
             n=(target, "size"),
             completion_rate=(target, lambda x: float((x > 0).mean())),
@@ -346,7 +529,38 @@ def numeric_bins_rate(df: pd.DataFrame, target: str, col: str, bins: int = 8) ->
     return out
 
 
-def probability_band(p: float, low: float = 0.40, high: float = 0.70) -> str:
+def addon_effects(df: pd.DataFrame, target: str) -> List[str]:
+    notes: List[str] = []
+    for col in COMMON_BINARY_COLS:
+        if col not in df.columns or target not in df.columns:
+            continue
+
+        temp = pd.DataFrame(
+            {
+                col: pd.to_numeric(df[col], errors="coerce"),
+                target: pd.to_numeric(df[target], errors="coerce"),
+            }
+        ).dropna()
+
+        if temp.empty:
+            continue
+
+        grp = temp.groupby(col)[target].agg(
+            n="size",
+            rate=lambda x: float((x > 0).mean()),
+        )
+
+        if set(grp.index.tolist()) >= {0, 1}:
+            rate0 = float(grp.loc[0, "rate"])
+            rate1 = float(grp.loc[1, "rate"])
+            diff = (rate1 - rate0) * 100
+            notes.append(
+                f"{col.replace('_', ' ')} is associated with a {diff:+.2f} percentage-point change in observed completion when the indicator is 1 instead of 0."
+            )
+    return notes
+
+
+def probability_band(p: float, low: float, high: float) -> str:
     if not np.isfinite(p):
         return "Unknown"
     if p < low:
@@ -356,587 +570,867 @@ def probability_band(p: float, low: float = 0.40, high: float = 0.70) -> str:
     return "High"
 
 
-def safe_str(x) -> str:
-    if x is None or (isinstance(x, float) and not np.isfinite(x)):
-        return "—"
-    return str(x)
+def build_training_frame(df: pd.DataFrame, target_col: str, max_categories: int = 25) -> Tuple[pd.DataFrame, pd.Series]:
+    work = df.copy()
+
+    drop_candidates = [c for c in work.columns if c.lower() in {"customerid", "customer_id"}]
+    work = work.drop(columns=drop_candidates, errors="ignore")
+
+    work[target_col] = pd.to_numeric(work[target_col], errors="coerce")
+    work = work.dropna(subset=[target_col]).copy()
+    y = (work[target_col] > 0).astype(int)
+
+    X = work.drop(columns=[target_col], errors="ignore").copy()
+
+    for col in X.columns:
+        if X[col].dtype == object or str(X[col].dtype).startswith("category"):
+            X[col] = X[col].astype(str).fillna("Unknown").replace({"nan": "Unknown"})
+
+            nunique = X[col].nunique(dropna=True)
+            if nunique > max_categories:
+                top = X[col].value_counts().head(max_categories).index
+                X[col] = np.where(X[col].isin(top), X[col], "Other")
+
+    return X, y
 
 
-# =========================
-# Load dataset automatically
-# =========================
-path = resolve_dataset_path()
-if path is None:
-    st.error("Dataset file not found. Place customer_booking.csv (recommended) or data.csv in the same folder as app.py.")
-    st.stop()
+def build_pipeline(n_estimators: int, max_depth: Optional[int], random_state: int, X: pd.DataFrame) -> Pipeline:
+    numeric_cols = [c for c in X.columns if pd.api.types.is_numeric_dtype(X[c])]
+    categorical_cols = [c for c in X.columns if c not in numeric_cols]
 
-raw = load_csv_with_fallback(path)
+    num_pipe = Pipeline(
+        steps=[
+            ("imputer", SimpleImputer(strategy="median")),
+        ]
+    )
+
+    cat_pipe = Pipeline(
+        steps=[
+            ("imputer", SimpleImputer(strategy="most_frequent")),
+            ("onehot", OneHotEncoder(handle_unknown="ignore")),
+        ]
+    )
+
+    prep = ColumnTransformer(
+        transformers=[
+            ("num", num_pipe, numeric_cols),
+            ("cat", cat_pipe, categorical_cols),
+        ],
+        remainder="drop",
+        verbose_feature_names_out=False,
+    )
+
+    model = RandomForestClassifier(
+        n_estimators=int(n_estimators),
+        random_state=int(random_state),
+        n_jobs=-1,
+        max_depth=max_depth,
+        class_weight="balanced_subsample",
+    )
+
+    return Pipeline(steps=[("prep", prep), ("model", model)])
+
+
+def collapse_feature_importance(
+    feature_names: List[str],
+    importances: np.ndarray,
+    original_cols: List[str],
+) -> pd.DataFrame:
+    cols_sorted = sorted(original_cols, key=len, reverse=True)
+    mapped: List[str] = []
+
+    for feat in feature_names:
+        base = feat
+        for col in cols_sorted:
+            if feat == col or feat.startswith(f"{col}_"):
+                base = col
+                break
+        mapped.append(base)
+
+    imp = pd.DataFrame({"feature": mapped, "importance": importances})
+    imp = imp.groupby("feature", as_index=False)["importance"].sum()
+    imp = imp.sort_values("importance", ascending=False).reset_index(drop=True)
+    return imp
+
+
+def threshold_metrics(y_true: pd.Series, proba: np.ndarray, threshold: float) -> Dict[str, float]:
+    pred = (proba >= threshold).astype(int)
+    return {
+        "accuracy": float(accuracy_score(y_true, pred)),
+        "precision": float(precision_score(y_true, pred, zero_division=0)),
+        "recall": float(recall_score(y_true, pred, zero_division=0)),
+        "f1": float(f1_score(y_true, pred, zero_division=0)),
+        "confusion_matrix": confusion_matrix(y_true, pred),
+        "pred": pred,
+    }
+
+
+def threshold_tradeoff_table(y_true: pd.Series, proba: np.ndarray) -> pd.DataFrame:
+    rows = []
+    for thr in [0.30, 0.40, 0.50, 0.60, 0.70]:
+        m = threshold_metrics(y_true, proba, thr)
+        rows.append(
+            {
+                "Threshold": thr,
+                "Accuracy": m["accuracy"],
+                "Precision": m["precision"],
+                "Recall": m["recall"],
+                "F1": m["f1"],
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def train_and_evaluate(
+    df: pd.DataFrame,
+    target_col: str,
+    test_size: float,
+    random_state: int,
+    n_estimators: int,
+    max_depth: Optional[int],
+) -> Optional[Dict]:
+    X, y = build_training_frame(df, target_col=target_col)
+
+    if len(X) < 200:
+        return None
+    if y.nunique() < 2:
+        return None
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        X,
+        y,
+        test_size=float(test_size),
+        random_state=int(random_state),
+        stratify=y,
+    )
+
+    pipe = build_pipeline(
+        n_estimators=n_estimators,
+        max_depth=max_depth,
+        random_state=random_state,
+        X=X_train,
+    )
+    pipe.fit(X_train, y_train)
+
+    proba_test = pipe.predict_proba(X_test)[:, 1]
+    proba_all = pipe.predict_proba(X)[:, 1]
+
+    auc = float(roc_auc_score(y_test, proba_test))
+    ap = float(average_precision_score(y_test, proba_test))
+
+    feature_names = list(pipe.named_steps["prep"].get_feature_names_out())
+    raw_importances = pipe.named_steps["model"].feature_importances_
+    agg_importance = collapse_feature_importance(feature_names, raw_importances, list(X.columns))
+
+    fpr, tpr, roc_thr = roc_curve(y_test, proba_test)
+    prec_curve, rec_curve, pr_thr = precision_recall_curve(y_test, proba_test)
+
+    return {
+        "pipeline": pipe,
+        "X": X,
+        "y": y,
+        "X_test": X_test,
+        "y_test": y_test,
+        "proba_test": proba_test,
+        "proba_all": proba_all,
+        "roc_auc": auc,
+        "average_precision": ap,
+        "feature_importance": agg_importance,
+        "roc": (fpr, tpr, roc_thr),
+        "pr": (prec_curve, rec_curve, pr_thr),
+    }
+
+
+def build_data_driven_insights(df: pd.DataFrame, target_col: str, min_group_n: int) -> List[str]:
+    notes: List[str] = []
+
+    overall = completion_rate(df[target_col])
+    notes.append(
+        f"Overall booking completion is {fmt_pct(overall)} in the current analysis scope."
+    )
+
+    key_cats = [c for c in COMMON_CATEGORY_PRIORITY if c in df.columns]
+    best_segment = None
+    worst_segment = None
+    best_lift = -np.inf
+    worst_lift = np.inf
+
+    for col in key_cats:
+        tab, base = rate_table_by_category(df, target_col, col, min_n=min_group_n, top_n=50)
+        if tab.empty:
+            continue
+        top = tab.iloc[0]
+        bot = tab.sort_values("lift_vs_overall", ascending=True).iloc[0]
+
+        if float(top["lift_vs_overall"]) > best_lift:
+            best_lift = float(top["lift_vs_overall"])
+            best_segment = f"{col} = {top[col]}"
+
+        if float(bot["lift_vs_overall"]) < worst_lift:
+            worst_lift = float(bot["lift_vs_overall"])
+            worst_segment = f"{col} = {bot[col]}"
+
+    if best_segment is not None:
+        notes.append(
+            f"The strongest observed conversion segment is {best_segment}, performing {best_lift * 100:+.2f} percentage points versus the overall rate."
+        )
+    if worst_segment is not None:
+        notes.append(
+            f"The weakest observed conversion segment is {worst_segment}, performing {worst_lift * 100:+.2f} percentage points versus the overall rate."
+        )
+
+    for num_col in COMMON_NUMERIC_PRIORITY:
+        if num_col in df.columns:
+            bins = numeric_bins_rate(df, target_col, num_col, bins=8)
+            if not bins.empty:
+                top_bin = bins.sort_values("completion_rate", ascending=False).iloc[0]
+                low_bin = bins.sort_values("completion_rate", ascending=True).iloc[0]
+                notes.append(
+                    f"For {num_col}, the strongest observed range is {top_bin['value_min']:.0f} to {top_bin['value_max']:.0f}, while the weakest range is {low_bin['value_min']:.0f} to {low_bin['value_max']:.0f}."
+                )
+                break
+
+    addon_notes = addon_effects(df, target_col)
+    if addon_notes:
+        notes.append(addon_notes[0])
+
+    return notes[:5]
+
+
+def build_model_driven_insights(
+    model_result: Optional[Dict],
+    threshold: float,
+    low_band: float,
+    high_band: float,
+) -> List[str]:
+    if model_result is None:
+        return [
+            "Model-driven insights are unavailable because the filtered dataset is too small or the target class is not sufficiently mixed."
+        ]
+
+    notes: List[str] = []
+    y_test = model_result["y_test"]
+    proba_test = model_result["proba_test"]
+    metrics = threshold_metrics(y_test, proba_test, threshold)
+    fi = model_result["feature_importance"]
+
+    notes.append(
+        f"The Random Forest reaches ROC-AUC {model_result['roc_auc']:.3f} and average precision {model_result['average_precision']:.3f} on the holdout split."
+    )
+    notes.append(
+        f"At the active decision threshold of {threshold:.2f}, precision is {metrics['precision']:.3f}, recall is {metrics['recall']:.3f}, and F1 is {metrics['f1']:.3f}."
+    )
+
+    if fi is not None and not fi.empty:
+        top_features = ", ".join(fi.head(4)["feature"].astype(str).tolist())
+        notes.append(f"The most influential model drivers are {top_features}.")
+
+    proba_all = model_result["proba_all"]
+    high_share = float((proba_all > high_band).mean())
+    low_share = float((proba_all < low_band).mean())
+    notes.append(
+        f"{fmt_pct(high_share)} of records fall into the high-probability completion band, while {fmt_pct(low_share)} fall into the low-probability band."
+    )
+
+    return notes[:5]
+
+
+# =========================================================
+# Sidebar controls
+# =========================================================
+st.sidebar.title("Controls")
+
+use_auto_file = st.sidebar.checkbox("Load local dataset automatically", value=True)
+
+if use_auto_file:
+    path = resolve_dataset_path()
+    if path is None:
+        st.error("Dataset file not found. Place customer_booking.csv, data.csv, or customer_booking_prediction.csv next to app.py.")
+        st.stop()
+    raw = load_csv_with_fallback_from_path(str(path))
+    source_label = path.name
+else:
+    uploaded = st.sidebar.file_uploader("Upload booking CSV", type=["csv"])
+    if uploaded is None:
+        st.info("Upload a CSV or enable automatic local loading.")
+        st.stop()
+    raw = load_csv_with_fallback_from_bytes(uploaded.getvalue())
+    source_label = uploaded.name
+
 df = standardize_df(raw)
 target_default = detect_target(df)
 
-# =========================
-# Header
-# =========================
-st.markdown("## Customer Booking Prediction Dashboard")
-st.caption("An interactive dashboard for understanding booking completion drivers and evaluating a Random Forest classifier.")
-st.write("")
-
-# =========================
-# Sidebar
-# =========================
-st.sidebar.title("Controls")
-
-page = st.sidebar.radio(
-    "Navigate",
-    ["Dashboard Summary", "Data Overview", "Exploratory Analysis", "Insights", "Model Performance", "Prediction Tool"],
-    index=0,
-)
-
 st.sidebar.divider()
-st.sidebar.subheader("Target")
+st.sidebar.subheader("Target and filters")
 target_col = st.sidebar.selectbox(
     "Target column",
     options=df.columns.tolist(),
     index=df.columns.tolist().index(target_default),
 )
 
+sales_channels = []
+trip_types = []
+flight_days = []
+
+if "sales_channel" in df.columns:
+    sales_channels = st.sidebar.multiselect(
+        "Sales channel",
+        options=sorted(df["sales_channel"].dropna().astype(str).unique().tolist()),
+        default=[],
+    )
+
+if "trip_type" in df.columns:
+    trip_types = st.sidebar.multiselect(
+        "Trip type",
+        options=sorted(df["trip_type"].dropna().astype(str).unique().tolist()),
+        default=[],
+    )
+
+if "flight_day" in df.columns:
+    flight_days = st.sidebar.multiselect(
+        "Flight day",
+        options=DAY_ORDER,
+        default=[],
+    )
+
 st.sidebar.divider()
 st.sidebar.subheader("Model settings")
-test_size = st.sidebar.slider("Test split", 0.1, 0.4, 0.2, step=0.05)
-random_state = st.sidebar.number_input("Random state", min_value=0, max_value=10_000, value=42)
-n_estimators = st.sidebar.slider("Trees (n_estimators)", 50, 600, 200, step=50)
+test_size = st.sidebar.slider("Test split", 0.10, 0.40, 0.20, step=0.05)
+random_state = st.sidebar.number_input("Random state", min_value=0, max_value=10000, value=42, step=1)
+n_estimators = st.sidebar.slider("Trees", 100, 600, 250, step=50)
 depth_choice = st.sidebar.selectbox("Max depth", ["None", "10", "20", "30"], index=0)
 max_depth = None if depth_choice == "None" else int(depth_choice)
-threshold = st.sidebar.slider("Decision threshold", 0.05, 0.95, 0.50, step=0.05)
+threshold = st.sidebar.slider("Decision threshold", 0.10, 0.90, 0.50, step=0.05)
 
 st.sidebar.divider()
-st.sidebar.subheader("Insights settings")
+st.sidebar.subheader("Insight settings")
 low_band = st.sidebar.slider("Low probability cutoff", 0.10, 0.60, 0.40, step=0.05)
 high_band = st.sidebar.slider("High probability cutoff", 0.50, 0.95, 0.70, step=0.05)
-min_group_n = st.sidebar.slider("Minimum group size for category insights", 50, 1000, 200, step=50)
+min_group_n = st.sidebar.slider("Minimum group size", 50, 1000, 200, step=50)
 
-run_train = st.sidebar.button("Train / Refresh", type="primary")
-st.sidebar.caption(f"Data source: {path.name}")
+# =========================================================
+# Apply filters
+# =========================================================
+dff = apply_filters(
+    df=df,
+    sales_channels=sales_channels,
+    trip_types=trip_types,
+    flight_days=flight_days,
+)
 
-# =========================
-# KPIs (shown on all pages, intentionally)
-# =========================
-n_rows, n_cols = df.shape
-base_rate = completion_rate(df[target_col]) * 100 if pd.to_numeric(df[target_col], errors="coerce").notna().any() else np.nan
+if dff.empty:
+    st.warning("No rows remain after the selected filters.")
+    st.stop()
 
-k1, k2, k3, k4 = st.columns(4, gap="large")
-with k1:
-    kpi_card("Rows", f"{n_rows:,}", "Records")
-with k2:
-    kpi_card("Columns", f"{n_cols:,}", "Features + target")
-with k3:
-    kpi_card("Booking completion rate", f"{base_rate:.2f}%" if np.isfinite(base_rate) else "—", "Share of completed bookings")
-with k4:
-    kpi_card("Target", target_col, "Prediction target")
+target_numeric = prepare_binary_target(dff[target_col])
+if target_numeric.empty:
+    st.error("The selected target column does not contain usable binary values.")
+    st.stop()
 
-st.write("")
+model_result = train_and_evaluate(
+    df=dff,
+    target_col=target_col,
+    test_size=test_size,
+    random_state=int(random_state),
+    n_estimators=int(n_estimators),
+    max_depth=max_depth,
+)
 
-# =========================
-# Pages
-# =========================
-if page == "Dashboard Summary":
-    left, right = st.columns([1.25, 1.0], gap="large")
+# =========================================================
+# Hero
+# =========================================================
+scope_bits = [f"Source: {source_label}"]
+if sales_channels:
+    scope_bits.append(f"Sales channel: {len(sales_channels)} selected")
+if trip_types:
+    scope_bits.append(f"Trip type: {len(trip_types)} selected")
+if flight_days:
+    scope_bits.append(f"Flight day: {len(flight_days)} selected")
+scope_bits.append(f"Records in view: {len(dff):,}")
+
+hero_text = (
+    "This dashboard focuses on customer booking conversion: which segments complete bookings at higher rates, "
+    "which features matter most to the classifier, and how scenario changes affect predicted completion probability."
+)
+
+st.markdown(
+    f"""
+    <div class="hero">
+      <div class="hero-title">Customer Booking Conversion Intelligence Dashboard</div>
+      <p class="hero-sub">{esc(hero_text)}</p>
+      <div class="hero-strip">{esc(' | '.join(scope_bits))}</div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+# =========================================================
+# KPI row
+# =========================================================
+overall_rate = completion_rate(dff[target_col])
+completed_count = int((pd.to_numeric(dff[target_col], errors="coerce").fillna(0) > 0).sum())
+proba_high_share = np.nan
+top_driver = "N/A"
+best_segment_text = "N/A"
+
+if model_result is not None:
+    proba_high_share = float((model_result["proba_all"] > high_band).mean())
+    if not model_result["feature_importance"].empty:
+        top_driver = str(model_result["feature_importance"].iloc[0]["feature"])
+
+key_segments = []
+for col in [c for c in COMMON_CATEGORY_PRIORITY if c in dff.columns]:
+    tab, _ = rate_table_by_category(dff, target_col, col, min_n=min_group_n, top_n=50)
+    if not tab.empty:
+        top_row = tab.iloc[0]
+        key_segments.append((f"{col} = {top_row[col]}", float(top_row["completion_rate"])))
+
+if key_segments:
+    key_segments = sorted(key_segments, key=lambda x: x[1], reverse=True)
+    best_segment_text = key_segments[0][0]
+
+render_kpis(
+    [
+        ("Completion rate", fmt_pct(overall_rate), "Observed share of completed bookings"),
+        ("Completed bookings", f"{completed_count:,}", "Positive target count in the current slice"),
+        ("High-probability share", fmt_pct(proba_high_share), "Records above the high-probability completion band"),
+        ("Best observed segment", best_segment_text, "Highest segment completion rate after minimum sample filtering"),
+        ("Model ROC-AUC", f"{model_result['roc_auc']:.3f}" if model_result is not None else "N/A", "Holdout ranking quality"),
+        ("Top model driver", top_driver, "Most influential aggregated feature"),
+    ]
+)
+
+# =========================================================
+# Tabs
+# =========================================================
+tab1, tab2, tab3, tab4, tab5 = st.tabs(
+    [
+        "Executive summary",
+        "Booking behavior",
+        "Model evaluation",
+        "Scenario tool",
+        "Data appendix",
+    ]
+)
+
+# =========================================================
+# Executive summary
+# =========================================================
+with tab1:
+    left, right = st.columns([1.1, 0.9], gap="large")
 
     with left:
-        st.markdown('<div class="card">', unsafe_allow_html=True)
-        st.subheader("Project Summary")
-        st.write(
-            """
-This project analyses customer booking behaviour and predicts whether a booking is completed.
-The dashboard provides:
-- Dataset profile and booking completion rate
-- Exploratory analysis of patterns and distributions
-- Insights that combine observed patterns and model outputs
-- Model evaluation (confusion matrix, classification report, ROC and precision-recall)
-- A prediction tool to test scenarios by adjusting inputs
-            """.strip()
+        render_list_card(
+            "1. Data-driven insights",
+            build_data_driven_insights(dff, target_col, min_group_n=min_group_n),
+            "Observed completion patterns from the filtered dataset.",
         )
-        st.markdown("</div>", unsafe_allow_html=True)
+
+        st.write("")
+        render_section_title("Observed completion by segment")
+        available_cat = [c for c in COMMON_CATEGORY_PRIORITY if c in dff.columns]
+        if available_cat:
+            selected_cat = st.selectbox("Segment dimension", available_cat, key="summary_segment")
+            seg_tab, base = rate_table_by_category(dff, target_col, selected_cat, min_n=min_group_n, top_n=12)
+            if not seg_tab.empty:
+                seg_tab["completion_rate_pct"] = seg_tab["completion_rate"] * 100
+                fig = px.bar(
+                    seg_tab.sort_values("completion_rate_pct"),
+                    x="completion_rate_pct",
+                    y=selected_cat,
+                    orientation="h",
+                    labels={"completion_rate_pct": "Completion rate (%)", selected_cat: selected_cat},
+                )
+                fig.add_vline(x=base * 100, line_dash="dash")
+                fig.update_layout(height=380, margin=dict(l=10, r=10, t=20, b=10))
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info("No groups meet the minimum sample requirement for this dimension.")
+        else:
+            st.info("No expected categorical segment columns were found.")
 
     with right:
-        st.markdown('<div class="card">', unsafe_allow_html=True)
-        st.subheader("Data preview")
-        st.dataframe(df.head(30), use_container_width=True)
-        st.markdown("</div>", unsafe_allow_html=True)
+        render_list_card(
+            "2. Model-driven insights",
+            build_model_driven_insights(model_result, threshold=threshold, low_band=low_band, high_band=high_band),
+            "Classifier-based insights that complement the observed segment patterns.",
+        )
 
-elif page == "Data Overview":
-    st.markdown("### Data Overview")
+        st.write("")
+        render_section_title("Probability band distribution")
+        if model_result is not None:
+            band_df = pd.DataFrame(
+                {
+                    "predicted_probability": model_result["proba_all"],
+                }
+            )
+            band_df["band"] = [
+                probability_band(p, low=low_band, high=high_band)
+                for p in band_df["predicted_probability"]
+            ]
+            band_counts = (
+                band_df["band"]
+                .value_counts()
+                .reindex(["Low", "Medium", "High", "Unknown"])
+                .dropna()
+                .reset_index()
+            )
+            band_counts.columns = ["band", "count"]
+            band_counts["share"] = band_counts["count"] / band_counts["count"].sum()
 
-    a, b = st.columns([1.0, 1.0], gap="large")
-
-    with a:
-        st.markdown('<div class="card">', unsafe_allow_html=True)
-        st.subheader("Columns and types")
-        schema = pd.DataFrame({"column": df.columns, "dtype": [str(t) for t in df.dtypes]})
-        st.dataframe(schema, use_container_width=True, hide_index=True)
-        st.markdown("</div>", unsafe_allow_html=True)
-
-    with b:
-        st.markdown('<div class="card">', unsafe_allow_html=True)
-        st.subheader("Missing values (top columns)")
-        miss = df.isna().sum().sort_values(ascending=False)
-        miss = miss[miss > 0].head(15)
-        if len(miss) == 0:
-            st.success("No missing values detected.")
+            fig = px.bar(
+                band_counts,
+                x="band",
+                y="share",
+                labels={"band": "Probability band", "share": "Share of records"},
+            )
+            fig.update_layout(height=320, margin=dict(l=10, r=10, t=20, b=10))
+            st.plotly_chart(fig, use_container_width=True)
         else:
-            mdf = miss.reset_index()
-            mdf.columns = ["column", "missing_count"]
-            figm = px.bar(mdf, x="missing_count", y="column", orientation="h")
-            figm.update_layout(height=420, margin=dict(l=0, r=0, t=10, b=0))
-            st.plotly_chart(figm, use_container_width=True)
-        st.markdown("</div>", unsafe_allow_html=True)
+            st.info("Probability bands are unavailable because the model could not be trained.")
 
-    st.write("")
-    st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.subheader("Full preview")
-    st.dataframe(df.head(200), use_container_width=True)
-    st.markdown("</div>", unsafe_allow_html=True)
-
-elif page == "Exploratory Analysis":
-    st.markdown("### Exploratory Analysis")
-
-    a, b = st.columns([1.1, 1.0], gap="large")
-
-    with a:
-        st.markdown('<div class="card">', unsafe_allow_html=True)
-        st.subheader("Booking completion distribution")
-        y = pd.to_numeric(df[target_col], errors="coerce").fillna(0).astype(int)
-        dist = pd.DataFrame({"Booking completion": y.map({0: "Not completed", 1: "Completed"})})
-        fig = px.histogram(dist, x="Booking completion")
-        fig.update_layout(height=360, margin=dict(l=0, r=0, t=10, b=0))
-        st.plotly_chart(fig, use_container_width=True)
-        st.markdown("</div>", unsafe_allow_html=True)
-
-    with b:
-        st.markdown('<div class="card">', unsafe_allow_html=True)
-        st.subheader("Numeric feature explorer")
-        num_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c]) and c != target_col]
-        if not num_cols:
-            st.info("No numeric features detected.")
-        else:
-            col = st.selectbox("Select a numeric feature", num_cols)
-            s = pd.to_numeric(df[col], errors="coerce").dropna()
-            figd = px.histogram(s, nbins=40, labels={"value": col})
-            figd.update_layout(height=360, margin=dict(l=0, r=0, t=10, b=0))
-            st.plotly_chart(figd, use_container_width=True)
-        st.markdown("</div>", unsafe_allow_html=True)
-
-    st.write("")
-    st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.subheader("Correlation heatmap (numeric features)")
-    num_df = df.select_dtypes(include=[np.number]).copy()
-    if num_df.shape[1] < 2:
-        st.info("Not enough numeric columns for correlation.")
-    else:
-        corr = num_df.corr(numeric_only=True)
-        figc = px.imshow(corr, aspect="auto")
-        figc.update_layout(height=520, margin=dict(l=0, r=0, t=10, b=0))
-        st.plotly_chart(figc, use_container_width=True)
-    st.markdown("</div>", unsafe_allow_html=True)
-
-elif page == "Insights":
-    st.markdown("### Insights")
-    st.caption("Insights are structured as: (1) data-driven insights, then (2) model-driven insights.")
-
-    overall = completion_rate(df[target_col])
-    overall_pct = overall * 100 if np.isfinite(overall) else np.nan
-
-    # -------------------------
-    # 1) Data-driven insights
-    # -------------------------
-    st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.subheader("Data-driven insights")
-    st.caption("These insights are computed directly from the dataset (no model required).")
-
-    # Quick segment scans for common categorical columns
-    cat_cols_primary = [c for c in ["sales_channel", "trip_type", "flight_day"] if c in df.columns]
-
-    best_segment = "—"
-    worst_segment = "—"
-    best_lift_pp = np.nan
-    worst_lift_pp = np.nan
-
-    # Find strongest single segment across primary categorical cols
-    for ccol in cat_cols_primary:
-        tab, base = rate_table_by_category(df, target_col, ccol, min_n=min_group_n, top_n=50)
-        if tab.empty:
-            continue
-        top = tab.iloc[0]
-        bot = tab.sort_values("lift_vs_overall", ascending=True).iloc[0]
-        if not np.isfinite(best_lift_pp) or float(top["lift_vs_overall"]) > best_lift_pp:
-            best_lift_pp = float(top["lift_vs_overall"])
-            best_segment = f"{ccol} = {safe_str(top[ccol])}"
-        if not np.isfinite(worst_lift_pp) or float(bot["lift_vs_overall"]) < worst_lift_pp:
-            worst_lift_pp = float(bot["lift_vs_overall"])
-            worst_segment = f"{ccol} = {safe_str(bot[ccol])}"
-
-    # Numeric: pick default numeric for a data-driven bin insight
-    numeric_defaults = [c for c in ["purchase_lead", "length_of_stay", "flight_duration", "flight_hour", "num_passengers"] if c in df.columns]
-    default_num = numeric_defaults[0] if numeric_defaults else None
-    best_bin_text = "—"
-    low_bin_text = "—"
-
-    if default_num is not None:
-        bt0 = numeric_bins_rate(df, target_col, default_num, bins=8)
-        if not bt0.empty:
-            bt_show0 = bt0.copy()
-            bt_show0["completion_rate_pct"] = (bt_show0["completion_rate"] * 100)
-            top0 = bt_show0.sort_values("completion_rate_pct", ascending=False).head(1).iloc[0]
-            low0 = bt_show0.sort_values("completion_rate_pct", ascending=True).head(1).iloc[0]
-            best_bin_text = f"{default_num}: {top0['value_min']:.0f} to {top0['value_max']:.0f} (rate {top0['completion_rate_pct']:.2f}%, n={int(top0['n'])})"
-            low_bin_text = f"{default_num}: {low0['value_min']:.0f} to {low0['value_max']:.0f} (rate {low0['completion_rate_pct']:.2f}%, n={int(low0['n'])})"
-
-    d1, d2, d3, d4 = st.columns(4, gap="large")
-    with d1:
-        kpi_card("Overall completion rate", f"{overall_pct:.2f}%" if np.isfinite(overall_pct) else "—", "Across the full dataset")
-    with d2:
-        kpi_card("Best observed segment", best_segment, f"Lift {best_lift_pp*100:+.2f} pp" if np.isfinite(best_lift_pp) else "No segment found")
-    with d3:
-        kpi_card("Lowest observed segment", worst_segment, f"Lift {worst_lift_pp*100:+.2f} pp" if np.isfinite(worst_lift_pp) else "No segment found")
-    with d4:
-        kpi_card("Numeric range signal", default_num if default_num else "—", "Range-based completion differences")
-
-    st.write("")
-    c1, c2 = st.columns([1.1, 1.0], gap="large")
+# =========================================================
+# Booking behavior
+# =========================================================
+with tab2:
+    c1, c2 = st.columns([1.0, 1.0], gap="large")
 
     with c1:
-        st.subheader("Category segments (completion rate vs overall)")
-        if not cat_cols_primary:
-            st.info("No expected categorical columns were found (sales_channel, trip_type, flight_day).")
-        else:
-            for ccol in cat_cols_primary:
-                tab, base = rate_table_by_category(df, target_col, ccol, min_n=min_group_n, top_n=8)
-                if tab.empty:
-                    st.write(f"{ccol}: no groups meet the minimum sample size.")
-                    continue
-                show = tab.copy()
-                show["completion_rate_pct"] = (show["completion_rate"] * 100).round(2)
-                show["lift_pct_points"] = (show["lift_vs_overall"] * 100).round(2)
-                show = show[[ccol, "n", "completion_rate_pct", "lift_pct_points"]]
-                st.markdown(f"**{ccol}**")
-                st.dataframe(show, use_container_width=True, hide_index=True)
-
-    with c2:
-        st.subheader("Numeric ranges (observed completion rate)")
-        if default_num is None:
-            st.info("No expected numeric columns were found.")
-        else:
-            st.write(f"Best range: {best_bin_text}")
-            st.write(f"Lowest range: {low_bin_text}")
-
-            nbins0 = st.slider("Bins for the default numeric view", 5, 12, 8)
-            bt = numeric_bins_rate(df, target_col, default_num, bins=nbins0)
-            if bt.empty:
-                st.write("Not enough valid values to compute binned rates.")
-            else:
-                bt_show = bt.copy()
-                bt_show["completion_rate_pct"] = (bt_show["completion_rate"] * 100).round(2)
-
+        render_section_title("Numeric conversion profile")
+        numeric_candidates = [c for c in COMMON_NUMERIC_PRIORITY if c in dff.columns]
+        if numeric_candidates:
+            selected_num = st.selectbox("Numeric feature", numeric_candidates, key="num_profile")
+            bins_df = numeric_bins_rate(dff, target_col, selected_num, bins=8)
+            if not bins_df.empty:
+                bins_df["completion_rate_pct"] = bins_df["completion_rate"] * 100
                 fig = px.line(
-                    bt_show,
+                    bins_df,
                     x="value_median",
                     y="completion_rate_pct",
                     markers=True,
-                    labels={"value_median": "Bin median value", "completion_rate_pct": "Completion rate (%)"},
+                    labels={
+                        "value_median": f"{selected_num} bin median",
+                        "completion_rate_pct": "Completion rate (%)",
+                    },
                 )
-                fig.update_layout(height=320, margin=dict(l=0, r=0, t=10, b=0))
+                fig.update_layout(height=380, margin=dict(l=10, r=10, t=20, b=10))
                 st.plotly_chart(fig, use_container_width=True)
 
-    st.markdown("</div>", unsafe_allow_html=True)
-
-    st.write("")
-
-    # -------------------------
-    # 2) Model-driven insights
-    # -------------------------
-    st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.subheader("Model-driven insights")
-    st.caption("These insights require training the model. They help explain predicted probability bands and key drivers.")
-
-    if not run_train:
-        st.info("Use the Train / Refresh button in the sidebar to generate model-driven insights.")
-        st.markdown("</div>", unsafe_allow_html=True)
-        st.stop()
-
-    with st.spinner("Preparing model-driven insights..."):
-        pipe, X_all, y_all, X_test, y_test, pred, proba_test, proba_all, acc, roc_auc, report, cm, fi, roc, pr, ap = train_eval_cached(
-            df=df,
-            target_col=target_col,
-            test_size=float(test_size),
-            random_state=int(random_state),
-            n_estimators=int(n_estimators),
-            max_depth=max_depth,
-        )
-
-    m1, m2, m3, m4 = st.columns(4, gap="large")
-    with m1:
-        kpi_card("Model accuracy", f"{acc:.3f}" if np.isfinite(acc) else "—", "Test split")
-    with m2:
-        kpi_card("Model ROC-AUC", f"{roc_auc:.3f}" if np.isfinite(roc_auc) else "—", "Ranking quality")
-    with m3:
-        kpi_card("Average precision", f"{ap:.3f}" if np.isfinite(ap) else "—", "Precision-recall summary")
-    with m4:
-        kpi_card("Group threshold", f"{min_group_n:,}", "Minimum group size used")
-
-    st.write("")
-
-    # Probability bands
-    st.subheader("Predicted probability distribution")
-    if proba_all is None or len(proba_all) != len(df):
-        st.info("Probability distribution is not available (model probabilities could not be computed).")
-    else:
-        band_df = df[[target_col]].copy()
-        band_df["predicted_probability"] = proba_all
-        band_df["probability_band"] = [probability_band(p, low=low_band, high=high_band) for p in proba_all]
-
-        band_counts = (
-            band_df["probability_band"]
-            .value_counts()
-            .reindex(["Low", "Medium", "High", "Unknown"])
-            .dropna()
-            .reset_index()
-        )
-        band_counts.columns = ["band", "count"]
-        band_counts["share"] = band_counts["count"] / band_counts["count"].sum()
-
-        figb = px.bar(
-            band_counts,
-            x="band",
-            y="share",
-            labels={"band": "Probability band", "share": "Share of records"},
-        )
-        figb.update_layout(height=320, margin=dict(l=0, r=0, t=10, b=0))
-        st.plotly_chart(figb, use_container_width=True)
-
-        st.markdown(
-            f"<div class='small'>Band cutoffs: Low &lt; {low_band:.2f}, Medium {low_band:.2f}–{high_band:.2f}, High &gt; {high_band:.2f}.</div>",
-            unsafe_allow_html=True,
-        )
-
-    st.write("")
-    st.subheader("Top model drivers")
-    if fi is None or fi.empty:
-        st.info("Feature importance could not be extracted.")
-    else:
-        topn = st.slider("Show top N model drivers", 5, 30, 12)
-        top_fi = fi.head(topn).copy()
-        fig_fi = px.bar(top_fi.iloc[::-1], x="importance", y="feature", orientation="h")
-        fig_fi.update_layout(height=420, margin=dict(l=0, r=0, t=10, b=0))
-        st.plotly_chart(fig_fi, use_container_width=True)
-
-    st.write("")
-    st.subheader("Recommended focus areas (grounded associations)")
-    st.caption("These are associations observed in the dataset and model drivers. They do not imply causation.")
-
-    recs = []
-
-    # sales_channel
-    if "sales_channel" in df.columns:
-        tab, base = rate_table_by_category(df, target_col, "sales_channel", min_n=min_group_n, top_n=50)
-        if not tab.empty:
-            best = tab.iloc[0]
-            worst = tab.sort_values("lift_vs_overall", ascending=True).iloc[0]
-            recs.append(
-                f"Channel gap: best={safe_str(best['sales_channel'])} at {(best['completion_rate']*100):.2f}% vs "
-                f"worst={safe_str(worst['sales_channel'])} at {(worst['completion_rate']*100):.2f}%. "
-                "Focus on reducing friction in lower-performing channels."
-            )
-
-    # trip_type
-    if "trip_type" in df.columns:
-        tab, base = rate_table_by_category(df, target_col, "trip_type", min_n=min_group_n, top_n=50)
-        if not tab.empty:
-            best = tab.iloc[0]
-            worst = tab.sort_values("lift_vs_overall", ascending=True).iloc[0]
-            recs.append(
-                f"Trip type gap: best={safe_str(best['trip_type'])} at {(best['completion_rate']*100):.2f}% vs "
-                f"worst={safe_str(worst['trip_type'])} at {(worst['completion_rate']*100):.2f}%. "
-                "Review messaging and checkout steps for lower-performing trip types."
-            )
-
-    # wants_* flags
-    wants_cols = [c for c in ["wants_extra_baggage", "wants_preferred_seat", "wants_in_flight_meals"] if c in df.columns]
-    for wc in wants_cols:
-        tmp = df[[wc, target_col]].copy()
-        tmp[wc] = pd.to_numeric(tmp[wc], errors="coerce")
-        tmp[target_col] = pd.to_numeric(tmp[target_col], errors="coerce")
-        tmp = tmp.dropna()
-        if tmp.empty:
-            continue
-        g = tmp.groupby(wc)[target_col].agg(n="size", rate=lambda x: float((x > 0).mean())).reset_index()
-        if set(g[wc].unique().tolist()) >= {0, 1}:
-            r0 = float(g.loc[g[wc] == 0, "rate"].values[0])
-            r1 = float(g.loc[g[wc] == 1, "rate"].values[0])
-            lift_pp = (r1 - r0) * 100
-            recs.append(
-                f"Add-on indicator ({wc}): rate when 1 is {r1*100:.2f}% vs {r0*100:.2f}% when 0 "
-                f"(difference {lift_pp:+.2f} percentage points). Consider how add-ons are presented in the booking flow."
-            )
-
-    if len(recs) == 0:
-        st.write("No recommendations could be generated for the available columns.")
-    else:
-        for r in recs[:6]:
-            st.write(f"- {r}")
-
-    st.markdown("</div>", unsafe_allow_html=True)
-
-elif page == "Model Performance":
-    st.markdown("### Model Performance")
-
-    if not run_train:
-        st.info("Use the Train / Refresh button in the sidebar to compute model metrics.")
-        st.stop()
-
-    with st.spinner("Training model..."):
-        pipe, X_all, y_all, X_test, y_test, pred, proba_test, proba_all, acc, roc_auc, report, cm, fi, roc, pr, ap = train_eval_cached(
-            df=df,
-            target_col=target_col,
-            test_size=float(test_size),
-            random_state=int(random_state),
-            n_estimators=int(n_estimators),
-            max_depth=max_depth,
-        )
-
-    rep_df = pd.DataFrame(report).T
-
-    m1, m2, m3, m4 = st.columns(4, gap="large")
-    with m1:
-        kpi_card("Accuracy", f"{acc:.3f}" if np.isfinite(acc) else "—", "Overall correctness")
-    with m2:
-        kpi_card("ROC-AUC", f"{roc_auc:.3f}" if np.isfinite(roc_auc) else "—", "Ranking quality")
-    with m3:
-        kpi_card("Average precision", f"{ap:.3f}" if np.isfinite(ap) else "—", "Precision-recall summary")
-    with m4:
-        kpi_card("Test rows", f"{len(y_test):,}", "Holdout size")
-
-    st.write("")
-    left, right = st.columns([1.2, 1.0], gap="large")
-
-    with left:
-        st.markdown('<div class="card">', unsafe_allow_html=True)
-        st.subheader("Confusion matrix")
-        cm_df = pd.DataFrame(cm, index=["Actual 0", "Actual 1"], columns=["Pred 0", "Pred 1"])
-        fig_cm = px.imshow(cm_df, text_auto=True, aspect="auto")
-        fig_cm.update_layout(height=360, margin=dict(l=0, r=0, t=10, b=0))
-        st.plotly_chart(fig_cm, use_container_width=True)
-        st.markdown("</div>", unsafe_allow_html=True)
-
-    with right:
-        st.markdown('<div class="card">', unsafe_allow_html=True)
-        st.subheader("Classification report")
-        show_cols = ["precision", "recall", "f1-score", "support"]
-        rep_show = rep_df[[c for c in show_cols if c in rep_df.columns]].copy()
-        st.dataframe(rep_show, use_container_width=True)
-        st.markdown("</div>", unsafe_allow_html=True)
-
-    st.write("")
-    a, b = st.columns([1.0, 1.0], gap="large")
-
-    with a:
-        st.markdown('<div class="card">', unsafe_allow_html=True)
-        st.subheader("ROC curve")
-        if roc[0] is None:
-            st.info("ROC curve not available (requires binary target and probabilities).")
+                display_bins = bins_df.copy()
+                display_bins["value_min"] = display_bins["value_min"].round(2)
+                display_bins["value_max"] = display_bins["value_max"].round(2)
+                display_bins["completion_rate_pct"] = display_bins["completion_rate_pct"].round(2)
+                display_bins = display_bins[["value_min", "value_max", "n", "completion_rate_pct"]]
+                st.dataframe(display_bins, use_container_width=True, hide_index=True)
+            else:
+                st.info("Not enough valid numeric values were found for this feature.")
         else:
-            fpr, tpr, _ = roc
-            fig_roc = go.Figure()
-            fig_roc.add_trace(go.Scatter(x=fpr, y=tpr, name="ROC"))
-            fig_roc.add_trace(go.Scatter(x=[0, 1], y=[0, 1], name="Baseline", mode="lines"))
-            fig_roc.update_layout(
-                height=360,
-                margin=dict(l=0, r=0, t=10, b=0),
+            st.info("No expected numeric booking features were found.")
+
+    with c2:
+        render_section_title("Add-on association view")
+        addon_rows = []
+        for col in COMMON_BINARY_COLS:
+            if col in dff.columns:
+                temp = pd.DataFrame(
+                    {
+                        col: pd.to_numeric(dff[col], errors="coerce"),
+                        target_col: pd.to_numeric(dff[target_col], errors="coerce"),
+                    }
+                ).dropna()
+                if temp.empty:
+                    continue
+                grp = temp.groupby(col)[target_col].agg(
+                    n="size",
+                    completion_rate=lambda x: float((x > 0).mean()),
+                ).reset_index()
+                grp["feature"] = col
+                addon_rows.append(grp)
+
+        if addon_rows:
+            addon_df = pd.concat(addon_rows, ignore_index=True)
+            addon_df["completion_rate_pct"] = addon_df["completion_rate"] * 100
+            addon_df["label"] = addon_df["feature"] + " = " + addon_df.iloc[:, 0].astype(int).astype(str)
+
+            fig = px.bar(
+                addon_df,
+                x="feature",
+                y="completion_rate_pct",
+                color=addon_df.iloc[:, 0].astype(str),
+                barmode="group",
+                labels={"feature": "Add-on feature", "completion_rate_pct": "Completion rate (%)", "color": "Flag"},
+            )
+            fig.update_layout(height=380, margin=dict(l=10, r=10, t=20, b=10))
+            st.plotly_chart(fig, use_container_width=True)
+
+            display_addons = addon_df[[addon_df.columns[0], "feature", "n", "completion_rate_pct"]].copy()
+            display_addons.columns = ["flag", "feature", "n", "completion_rate_pct"]
+            display_addons["completion_rate_pct"] = display_addons["completion_rate_pct"].round(2)
+            st.dataframe(display_addons, use_container_width=True, hide_index=True)
+        else:
+            st.info("No usable add-on indicator columns were found.")
+
+    st.write("")
+    render_section_title("Observed completion heatmap")
+    heatmap_dims = [c for c in ["sales_channel", "trip_type", "flight_day"] if c in dff.columns]
+    if len(heatmap_dims) >= 2:
+        row_dim = st.selectbox("Rows", heatmap_dims, index=0, key="heat_row")
+        col_choices = [c for c in heatmap_dims if c != row_dim]
+        col_dim = st.selectbox("Columns", col_choices, index=0, key="heat_col")
+
+        temp = dff[[row_dim, col_dim, target_col]].copy()
+        temp[target_col] = pd.to_numeric(temp[target_col], errors="coerce")
+        temp = temp.dropna()
+        if not temp.empty:
+            pivot = temp.pivot_table(
+                index=row_dim,
+                columns=col_dim,
+                values=target_col,
+                aggfunc=lambda x: float((x > 0).mean()),
+            )
+            fig = px.imshow(
+                pivot * 100,
+                text_auto=".1f",
+                aspect="auto",
+                labels=dict(
+                x=col_dim,
+                y=row_dim,
+                color="Completion rate (%)",
+            ),
+         )
+            fig.update_layout(height=420, margin=dict(l=10, r=10, t=20, b=10))
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("The selected dimensions do not have enough usable rows.")
+
+# =========================================================
+# Model evaluation
+# =========================================================
+with tab3:
+    if model_result is None:
+        st.info("Model evaluation is unavailable because the filtered dataset is too small or the target class is not sufficiently mixed.")
+    else:
+        y_test = model_result["y_test"]
+        proba_test = model_result["proba_test"]
+        metrics = threshold_metrics(y_test, proba_test, threshold)
+        report_df = pd.DataFrame(
+            classification_report(
+                y_test,
+                metrics["pred"],
+                output_dict=True,
+                zero_division=0,
+            )
+        ).T
+
+        render_kpis(
+            [
+                ("Accuracy", f"{metrics['accuracy']:.3f}", "Share of correct holdout predictions"),
+                ("Precision", f"{metrics['precision']:.3f}", "Share of predicted completions that are correct"),
+                ("Recall", f"{metrics['recall']:.3f}", "Share of actual completions captured"),
+                ("F1", f"{metrics['f1']:.3f}", "Balance between precision and recall"),
+                ("ROC-AUC", f"{model_result['roc_auc']:.3f}", "Probability ranking quality"),
+                ("Average precision", f"{model_result['average_precision']:.3f}", "Precision-recall summary"),
+            ]
+        )
+
+        a, b = st.columns([1.0, 1.0], gap="large")
+
+        with a:
+            render_section_title("Confusion matrix")
+            cm_df = pd.DataFrame(
+                metrics["confusion_matrix"],
+                index=["Actual 0", "Actual 1"],
+                columns=["Pred 0", "Pred 1"],
+            )
+            fig = px.imshow(cm_df, text_auto=True, aspect="auto")
+            fig.update_layout(height=340, margin=dict(l=10, r=10, t=20, b=10))
+            st.plotly_chart(fig, use_container_width=True)
+
+        with b:
+            render_section_title("Threshold trade-off table")
+            thr_df = threshold_tradeoff_table(y_test, proba_test).copy()
+            for col in ["Accuracy", "Precision", "Recall", "F1"]:
+                thr_df[col] = thr_df[col].round(3)
+            st.dataframe(thr_df, use_container_width=True, hide_index=True)
+
+        st.write("")
+        c, d = st.columns([1.0, 1.0], gap="large")
+
+        with c:
+            render_section_title("ROC curve")
+            fpr, tpr, _ = model_result["roc"]
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=fpr, y=tpr, mode="lines", name="ROC"))
+            fig.add_trace(go.Scatter(x=[0, 1], y=[0, 1], mode="lines", name="Baseline"))
+            fig.update_layout(
+                height=340,
+                margin=dict(l=10, r=10, t=20, b=10),
                 xaxis_title="False positive rate",
                 yaxis_title="True positive rate",
                 legend=dict(orientation="h"),
             )
-            st.plotly_chart(fig_roc, use_container_width=True)
-        st.markdown("</div>", unsafe_allow_html=True)
+            st.plotly_chart(fig, use_container_width=True)
 
-    with b:
-        st.markdown('<div class="card">', unsafe_allow_html=True)
-        st.subheader("Feature importance")
-        if fi.empty:
-            st.info("Feature importance could not be extracted.")
-        else:
-            topn = st.slider("Show top N", 5, 30, 12)
-            fi_top = fi.head(topn).iloc[::-1]
-            fig_fi = px.bar(fi_top, x="importance", y="feature", orientation="h")
-            fig_fi.update_layout(height=360, margin=dict(l=0, r=0, t=10, b=0))
-            st.plotly_chart(fig_fi, use_container_width=True)
-        st.markdown("</div>", unsafe_allow_html=True)
+        with d:
+            render_section_title("Precision-recall curve")
+            prec_curve, rec_curve, _ = model_result["pr"]
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=rec_curve, y=prec_curve, mode="lines", name="PR"))
+            fig.update_layout(
+                height=340,
+                margin=dict(l=10, r=10, t=20, b=10),
+                xaxis_title="Recall",
+                yaxis_title="Precision",
+            )
+            st.plotly_chart(fig, use_container_width=True)
 
-elif page == "Prediction Tool":
-    st.markdown("### Prediction Tool")
-    st.caption("Adjust inputs and view the predicted probability of booking completion.")
-
-    if not run_train:
-        st.info("Use the Train / Refresh button in the sidebar before using the prediction tool.")
-        st.stop()
-
-    with st.spinner("Training model..."):
-        pipe, X_all, y_all, X_test, y_test, pred, proba_test, proba_all, acc, roc_auc, report, cm, fi, roc, pr, ap = train_eval_cached(
-            df=df,
-            target_col=target_col,
-            test_size=float(test_size),
-            random_state=int(random_state),
-            n_estimators=int(n_estimators),
-            max_depth=max_depth,
+        st.write("")
+        render_section_title("Aggregated feature importance")
+        fi = model_result["feature_importance"].head(15).copy()
+        fig = px.bar(
+            fi.iloc[::-1],
+            x="importance",
+            y="feature",
+            orientation="h",
+            labels={"importance": "Importance", "feature": "Feature"},
         )
+        fig.update_layout(height=420, margin=dict(l=10, r=10, t=20, b=10))
+        st.plotly_chart(fig, use_container_width=True)
 
-    X = df.drop(columns=[target_col], errors="ignore").copy()
+        st.write("")
+        render_section_title("Classification report")
+        show_cols = [c for c in ["precision", "recall", "f1-score", "support"] if c in report_df.columns]
+        st.dataframe(report_df[show_cols], use_container_width=True)
 
-    st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.subheader("Input selection")
+# =========================================================
+# Scenario tool
+# =========================================================
+with tab4:
+    if model_result is None:
+        st.info("The scenario tool is unavailable because the filtered dataset is too small or the target class is not sufficiently mixed.")
+    else:
+        render_section_title("Booking completion scenario")
+        st.caption("Change inputs below to estimate the probability that a booking will be completed.")
 
-    input_row = {}
-    cols = st.columns(3, gap="large")
+        X_model = model_result["X"].copy()
+        input_row: Dict[str, object] = {}
 
-    for i, col in enumerate(X.columns):
-        box = cols[i % 3]
-        s = X[col]
+        cols_ui = st.columns(3, gap="large")
+        for i, col in enumerate(X_model.columns):
+            box = cols_ui[i % 3]
+            s = X_model[col]
 
-        if pd.api.types.is_numeric_dtype(s):
-            v = pd.to_numeric(s, errors="coerce").dropna()
-            if len(v) == 0:
-                input_row[col] = 0.0
-                continue
-            vmin = float(v.quantile(0.01))
-            vmax = float(v.quantile(0.99))
-            vmed = float(v.median())
-            input_row[col] = box.slider(col, min_value=vmin, max_value=vmax, value=vmed)
-        else:
-            vals = s.dropna().astype(str).unique().tolist()
-            vals = sorted(vals)[:250] if len(vals) > 250 else sorted(vals)
-            input_row[col] = box.selectbox(col, vals) if vals else ""
+            if pd.api.types.is_numeric_dtype(s):
+                vals = pd.to_numeric(s, errors="coerce").dropna()
+                if vals.empty:
+                    input_row[col] = 0.0
+                    continue
 
-    st.markdown("</div>", unsafe_allow_html=True)
+                q01 = float(vals.quantile(0.01))
+                q99 = float(vals.quantile(0.99))
+                median = float(vals.median())
 
-    X_new = pd.DataFrame([input_row])
+                is_integer_like = bool(np.allclose(vals.dropna() % 1, 0))
+                if is_integer_like:
+                    input_row[col] = box.number_input(
+                        col,
+                        min_value=int(np.floor(q01)),
+                        max_value=int(np.ceil(q99)),
+                        value=int(round(median)),
+                        step=1,
+                    )
+                else:
+                    input_row[col] = box.slider(
+                        col,
+                        min_value=float(q01),
+                        max_value=float(q99),
+                        value=float(median),
+                    )
+            else:
+                values = sorted(pd.Series(s).dropna().astype(str).unique().tolist())
+                if not values:
+                    input_row[col] = ""
+                else:
+                    default_value = values[0]
+                    if col in COMMON_CATEGORY_PRIORITY:
+                        mode_vals = pd.Series(s).mode(dropna=True)
+                        if not mode_vals.empty and str(mode_vals.iloc[0]) in values:
+                            default_value = str(mode_vals.iloc[0])
 
-    st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.subheader("Prediction result")
+                    input_row[col] = box.selectbox(
+                        col,
+                        options=values,
+                        index=values.index(default_value),
+                    )
 
-    if hasattr(pipe.named_steps["model"], "predict_proba"):
-        p = float(pipe.predict_proba(X_new)[:, 1][0])
-        decision = 1 if p >= threshold else 0
+        X_new = pd.DataFrame([input_row], columns=X_model.columns)
+        p = float(model_result["pipeline"].predict_proba(X_new)[:, 1][0])
+        pred_class = int(p >= threshold)
         band = probability_band(p, low=low_band, high=high_band)
 
-        st.success(f"Predicted booking completion probability: {p:.2%}")
-        st.write(f"Probability band: {band}")
-        st.write(f"Decision threshold: {threshold:.2f}")
-        st.write(f"Predicted class: {'Completed' if decision == 1 else 'Not completed'}")
-        st.markdown(
-            "<div class='small'>The probability is model-based. Use it to compare scenarios, not as a guarantee of outcomes.</div>",
-            unsafe_allow_html=True,
+        render_kpis(
+            [
+                ("Predicted completion probability", fmt_pct(p), "Model-estimated conversion likelihood"),
+                ("Probability band", band, "Based on the current low and high cutoffs"),
+                ("Decision threshold", f"{threshold:.2f}", "Current classification threshold"),
+                ("Predicted class", "Completed" if pred_class == 1 else "Not completed", "Threshold-based decision"),
+                ("Low cutoff", f"{low_band:.2f}", "Start of the medium probability band"),
+                ("High cutoff", f"{high_band:.2f}", "Start of the high probability band"),
+            ]
         )
-    else:
-        pred_cls = int(pipe.predict(X_new)[0])
-        st.success(f"Predicted class: {pred_cls}")
 
-    st.markdown("</div>", unsafe_allow_html=True)
+        st.write("")
+        render_section_title("Scenario interpretation")
+        scenario_notes = [
+            f"This scenario sits in the {band.lower()} probability band.",
+            f"The model would classify the case as {'completed' if pred_class == 1 else 'not completed'} at the active threshold.",
+            "Use this tool to compare scenarios rather than treating the output as a guaranteed customer action.",
+        ]
+        render_list_card(
+            "Scenario notes",
+            scenario_notes,
+            "Probability-based interpretation for the values entered above.",
+        )
+
+# =========================================================
+# Data appendix
+# =========================================================
+with tab5:
+    render_section_title("Source and structure")
+    render_badges(
+        [
+            f"Source: {source_label}",
+            f"Rows in current slice: {len(dff):,}",
+            f"Columns: {dff.shape[1]:,}",
+            f"Target: {target_col}",
+        ]
+    )
+
+    st.write("")
+    a, b = st.columns([1.0, 1.0], gap="large")
+
+    with a:
+        render_section_title("Schema")
+        schema = pd.DataFrame({"column": dff.columns, "dtype": [str(t) for t in dff.dtypes]})
+        st.dataframe(schema, use_container_width=True, hide_index=True)
+
+    with b:
+        render_section_title("Missingness summary")
+        miss = dff.isna().mean().sort_values(ascending=False).reset_index()
+        miss.columns = ["column", "missing_share"]
+        miss["missing_share"] = miss["missing_share"].map(lambda x: fmt_pct(x))
+        st.dataframe(miss, use_container_width=True, hide_index=True)
+
+    st.write("")
+    render_section_title("Filtered preview")
+    preview_rows = st.slider("Rows to preview", 20, 200, 50, step=10)
+    st.dataframe(dff.head(preview_rows), use_container_width=True, hide_index=True)
+
+    st.write("")
+    csv_bytes = dff.to_csv(index=False).encode("utf-8")
+    st.download_button(
+        label="Download filtered data as CSV",
+        data=csv_bytes,
+        file_name="customer_booking_filtered.csv",
+        mime="text/csv",
+    )
